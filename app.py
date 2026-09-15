@@ -16,7 +16,6 @@ st.markdown("""
     .sub-header {
         color: #4a4a4a;
     }
-    /* Estilizar la tabla cuando se usa st.dataframe */
     .stDataFrame {
         font-size: 14px;
     }
@@ -63,10 +62,10 @@ if uploaded_file is not None:
             # 3. Leer el archivo con la fila de encabezado correcta
             df = pd.read_excel(uploaded_file, header=header_row_index, dtype=str)
             
-            # Limpiar nombres de columnas (quitar espacios extra y saltos de línea)
+            # Limpiar nombres de columnas
             df.columns = df.columns.str.strip().str.replace(r'\r\n', '', regex=True)
             
-            # 4. Seleccionar las columnas requeridas (mapeo a lo solicitado)
+            # 4. Seleccionar las columnas requeridas
             columnas_esperadas = {
                 'NOMBRE COMPANIA': 'Compañia usuaria',
                 'PLACA': 'Placa',
@@ -77,7 +76,6 @@ if uploaded_file is not None:
                 'FECHA BASCULA': 'Fecha de Báscula'
             }
             
-            # Verificar si las columnas esperadas existen
             columnas_faltantes = [col for col in columnas_esperadas.keys() if col not in df.columns]
             if columnas_faltantes:
                 st.warning(f"⚠️ Faltan las siguientes columnas en el archivo: {', '.join(columnas_faltantes)}")
@@ -106,20 +104,18 @@ if uploaded_file is not None:
                 if col in df_filtrado.columns:
                     df_filtrado[col] = pd.to_datetime(df_filtrado[col], errors='coerce').dt.date
 
-            # Eliminar duplicados idénticos para evitar repeticiones innecesarias
+            # Eliminar duplicados idénticos
             columnas_dedup = [col for col in ['Placa', 'Fecha Registro', 'Compañia usuaria', 'Número Tipo Documento', 'Transito', 'Fecha de Báscula'] if col in df_filtrado.columns]
             df_filtrado = df_filtrado.drop_duplicates(subset=columnas_dedup, keep='first')
 
-            # 8. Cálculos de Vencimiento y Días Restantes basados en Fecha de Báscula (IGUAL QUE EN EXCEL)
+            # 8. Cálculos de Vencimiento y Días Restantes basados en Fecha de Báscula
             df_filtrado['Limite'] = 5
             
             def calcular_vencimiento(row):
-                # Usar Fecha de Báscula como base principal (igual que en tu Excel de SharePoint), respaldada por Fecha Registro
                 fecha_base = row['Fecha de Báscula'] if pd.notna(row['Fecha de Báscula']) and str(row['Fecha de Báscula']) != 'NaT' else row['Fecha Registro']
                 if pd.isna(fecha_base) or str(fecha_base) == 'NaT':
                     return None
                 try:
-                    # Sumar 5 días hábiles
                     fecha_venc = np.busday_offset(np.datetime64(fecha_base), 5, roll='forward')
                     return pd.to_datetime(fecha_venc).date()
                 except:
@@ -127,7 +123,6 @@ if uploaded_file is not None:
                     
             df_filtrado['Vencimiento 5 DIAS HABILES'] = df_filtrado.apply(calcular_vencimiento, axis=1)
             
-            # Usar fecha actual para el cálculo
             hoy = datetime.date.today() 
             
             def calcular_dias_restantes(fecha_venc):
@@ -141,36 +136,30 @@ if uploaded_file is not None:
             # Reorganizar columnas
             orden_columnas = ['Placa', 'Fecha Registro', 'Compañia usuaria', 'Número Tipo Documento', 'Transito', 'Fecha de Báscula', 'Limite', 'Vencimiento 5 DIAS HABILES', 'Días restantes']
             orden_columnas = [col for col in orden_columnas if col in df_filtrado.columns]
-            df_final = df_filtrado[orden_columnas]
+            df_final = df_filtrado[orden_columnas].copy()
             
-            # Reemplazar NaN por vacíos
-            df_final = df_final.fillna('')
-            
+            # Convertir Días restantes explícitamente a numérico para evitar errores de tipo
+            df_final['Días restantes'] = pd.to_numeric(df_final['Días restantes'], errors='coerce')
+
             # --- 9. Lógica de Semaforización ---
             def apply_row_colors(row):
                 try:
                     dias_val = row['Días restantes']
-                    if dias_val == '' or pd.isna(dias_val):
+                    if pd.isna(dias_val):
                         return [''] * len(row)
                     dias = float(dias_val)
                     if dias <= 0:
-                        return ['background-color: #d32f2f; color: white;'] * len(row)
+                        return ['background-color: #d32f2f; color: white;'] * len(row) # Rojo (Vencidos / Hoy)
                     elif 1 <= dias <= 2:
-                        return ['background-color: #fff59d; color: black;'] * len(row) 
+                        return ['background-color: #fff59d; color: black;'] * len(row) # Amarillo (Riesgo)
                     elif dias >= 3:
-                        return ['background-color: #a5d6a7; color: black;'] * len(row) 
+                        return ['background-color: #a5d6a7; color: black;'] * len(row) # Verde (A tiempo)
                 except:
                     pass
                 return [''] * len(row)
 
-            # KPIs seguros
-            def parse_dias(val):
-                try:
-                    return float(val)
-                except:
-                    return 999.0
-
-            dias_series = df_final['Días restantes'].apply(parse_dias)
+            # KPIs precisos con datos numéricos limpios
+            dias_series = df_final['Días restantes']
             vencidos = (dias_series <= 0).sum()
             riesgo = ((dias_series >= 1) & (dias_series <= 2)).sum()
             a_tiempo = (dias_series >= 3).sum()
@@ -183,6 +172,7 @@ if uploaded_file is not None:
             
             st.markdown("### 📋 Panel de Control de Ingresos")
             
+            # Aplicar estilo antes de rellenar vacíos con texto para preservar tipos numéricos
             styled_df = df_final.style.apply(apply_row_colors, axis=1)
             st.dataframe(styled_df, use_container_width=True, height=500, hide_index=True)
             
