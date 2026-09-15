@@ -23,8 +23,13 @@ def limpiar_numeros(valor):
     if pd.isna(valor) or valor == '':
         return ""
     try:
-        # Si es un número con decimales o flotante de Excel
-        return str(int(float(valor)))
+        val_str = str(valor).strip()
+        if val_str == '' or val_str.lower() in ['nan', 'none']:
+            return ""
+        # Si es un número con decimales de Excel
+        if '.' in val_str:
+            return str(int(float(val_str)))
+        return val_str
     except ValueError:
         return str(valor).strip()
 
@@ -32,9 +37,9 @@ def limpiar_numeros(valor):
 uploaded_file = st.file_uploader("Sube el archivo Excel (ReportePW.xlsx)", type=["xlsx", "xls"])
 
 if uploaded_file is not None:
-    with st.spinner("Procesando, unificando placas y calculando fechas..."):
+    with st.spinner("Procesando datos, limpiando duplicados y calculando fechas..."):
         try:
-            # 1. Buscar la fila correcta de encabezados leyendo todo como string para evitar errores de tipo
+            # 1. Buscar la fila correcta de encabezados leyendo todo como string
             df_raw = pd.read_excel(uploaded_file, header=None, dtype=str)
             header_row_index = -1
             for i, row in df_raw.iterrows():
@@ -51,30 +56,45 @@ if uploaded_file is not None:
             df = pd.read_excel(uploaded_file, header=header_row_index, dtype=str)
             df.columns = df.columns.str.strip().str.replace(r'\r\n', '', regex=True)
             
-            # 3. Mapear y filtrar columnas solicitadas
+            # 3. Mapear y filtrar columnas solicitadas (incluyendo Conductor/Identificación)
             columnas_esperadas = {
-                'NOMBRE COMPANIA': 'Compañia usuaria',
+                'NOMBRE COMPANIA': 'Compañía usuaria',
                 'PLACA': 'Placa',
+                'CONDUCTOR': 'Identificación / Conductor',
+                'IDENTIFICACION': 'Identificación / Conductor',
+                'CEDULA': 'Identificación / Conductor',
                 'FECHA REGISTRO': 'Fecha Registro',
                 'NUM DEL DOC. ADUANERO': 'Número Tipo Documento',
                 'TRANSITO': 'Transito',
                 'FECHA BASCULA': 'Fecha de Báscula'
             }
             
-            columnas_existentes = {k: v for k, v in columnas_esperadas.items() if k in df.columns}
+            # Buscar columnas existentes que coincidan con el mapa
+            columnas_existentes = {}
+            for col_excel in df.columns:
+                col_upper = col_excel.upper()
+                for key, target_name in columnas_esperadas.items():
+                    if key in col_upper and target_name not in columnas_existentes.values():
+                        columnas_existentes[col_excel] = target_name
+            
             if not columnas_existentes:
-                st.error("❌ El archivo no contiene las columnas esperadas (NOMBRE COMPANIA, PLACA, etc.).")
+                st.error("❌ El archivo no contiene las columnas esperadas de PICIZ.")
                 st.stop()
                 
             df_filtrado = df[list(columnas_existentes.keys())].rename(columns=columnas_existentes)
             
-            # Limpiar filas vacías sin placas
-            if 'Placa' in df_filtrado.columns:
-                df_filtrado = df_filtrado.dropna(subset=['Placa'])
-                df_filtrado['Placa'] = df_filtrado['Placa'].astype(str).str.strip()
+            # Asegurar que todas las columnas clave existan aunque no vengan en el Excel
+            for target in ['Placa', 'Identificación / Conductor', 'Fecha Registro', 'Compañía usuaria', 'Número Tipo Documento', 'Transito', 'Fecha de Báscula']:
+                if target not in df_filtrado.columns:
+                    df_filtrado[target] = ""
 
-            # 4. Limpieza de números (Documentos y Tránsito)
-            for col in ['Número Tipo Documento', 'Transito']:
+            # Limpiar filas completamente vacías sin placas
+            df_filtrado = df_filtrado.dropna(subset=['Placa'])
+            df_filtrado['Placa'] = df_filtrado['Placa'].astype(str).str.strip()
+            df_filtrado = df_filtrado[df_filtrado['Placa'] != '']
+
+            # 4. Limpieza de números (Documentos, Tránsito e Identificación)
+            for col in ['Número Tipo Documento', 'Transito', 'Identificación / Conductor']:
                 if col in df_filtrado.columns:
                     df_filtrado[col] = df_filtrado[col].apply(limpiar_numeros)
 
@@ -86,17 +106,13 @@ if uploaded_file is not None:
             # Límite constante (5 días hábiles)
             df_filtrado['Limite'] = 5
 
-            # 6. Agrupar duplicados de forma segura (Unir Placas si todo lo demás es igual)
-            columnas_base = [col for col in ['Fecha Registro', 'Compañia usuaria', 'Número Tipo Documento', 'Transito', 'Fecha de Báscula', 'Limite'] if col in df_filtrado.columns]
-            
-            # Garantizamos que la unión de placas sea estrictamente de strings para evitar errores de tipo
-            df_filtrado = df_filtrado.groupby(columnas_base, dropna=False, as_index=False).agg({
-                'Placa': lambda x: ' / '.join(str(v).strip() for v in x.dropna().unique() if str(v).strip() != '')
-            })
+            # 6. Eliminar registros duplicados idénticos (evitando mezcla confusa de placas)
+            columnas_dedup = [col for col in ['Placa', 'Identificación / Conductor', 'Fecha Registro', 'Compañía usuaria', 'Número Tipo Documento', 'Transito', 'Fecha de Báscula'] if col in df_filtrado.columns]
+            df_filtrado = df_filtrado.drop_duplicates(subset=columnas_dedup, keep='first')
 
             # 7. Cálculo de Fechas Equivalente a DIA.LAB de Excel
             def calcular_vencimiento(fecha_registro):
-                if pd.isna(fecha_registro):
+                if pd.isna(fecha_registro) or str(fecha_registro) == 'NaT':
                     return None
                 try:
                     fecha_venc = np.busday_offset(np.datetime64(fecha_registro), 5, roll='forward')
@@ -110,21 +126,28 @@ if uploaded_file is not None:
             hoy = datetime.date.today()
             
             def calcular_dias_restantes(fecha_venc):
-                if pd.isna(fecha_venc):
+                if pd.isna(fecha_venc) or str(fecha_venc) == 'NaT':
                     return None
                 return (fecha_venc - hoy).days
                 
             df_filtrado['Días restantes'] = df_filtrado['Vencimiento 5 DIAS HABILES'].apply(calcular_dias_restantes)
             
-            # 8. Reorganizar columnas para la vista final
-            orden_columnas = ['Placa', 'Fecha Registro', 'Compañia usuaria', 'Número Tipo Documento', 'Transito', 'Fecha de Báscula', 'Limite', 'Vencimiento 5 DIAS HABILES', 'Días restantes']
+            # 8. Reorganizar columnas para la vista final (Incluyendo Conductor)
+            orden_columnas = [
+                'Placa', 'Identificación / Conductor', 'Fecha Registro', 
+                'Compañía usuaria', 'Número Tipo Documento', 'Transito', 
+                'Fecha de Báscula', 'Limite', 'Vencimiento 5 DIAS HABILES', 'Días restantes'
+            ]
             orden_columnas = [col for col in orden_columnas if col in df_filtrado.columns]
             df_final = df_filtrado[orden_columnas].fillna('')
 
             # 9. Aplicar Colores (Semaforización)
             def apply_row_colors(row):
                 try:
-                    dias = float(row['Días restantes'])
+                    dias_val = row['Días restantes']
+                    if dias_val == '' or pd.isna(dias_val):
+                        return [''] * len(row)
+                    dias = float(dias_val)
                     if dias <= 0:
                         return ['background-color: #d32f2f; color: white;'] * len(row) # Rojo (Vencidos / Vencen hoy)
                     elif 1 <= dias <= 2:
@@ -136,16 +159,23 @@ if uploaded_file is not None:
                 return [''] * len(row)
 
             # --- Interfaz de Resultados ---
-            # Calcular KPIs
-            vencidos = df_final[pd.to_numeric(df_final['Días restantes'], errors='coerce') <= 0].shape[0]
-            riesgo = df_final[(pd.to_numeric(df_final['Días restantes'], errors='coerce') >= 1) & (pd.to_numeric(df_final['Días restantes'], errors='coerce') <= 2)].shape[0]
-            a_tiempo = df_final[pd.to_numeric(df_final['Días restantes'], errors='coerce') >= 3].shape[0]
+            # Calcular KPIs de forma segura
+            def parse_dias(val):
+                try:
+                    return float(val)
+                except:
+                    return 999.0
+
+            dias_series = df_final['Días restantes'].apply(parse_dias)
+            vencidos = (dias_series <= 0).sum()
+            riesgo = ((dias_series >= 1) & (dias_series <= 2)).sum()
+            a_tiempo = (dias_series >= 3).sum()
             
             st.markdown("### 📊 Resumen de Operaciones")
             col1, col2, col3 = st.columns(3)
-            col1.metric("🔴 Vencidos o Vencen Hoy", vencidos)
-            col2.metric("🟡 Próximos a Vencer (1-2 días)", riesgo)
-            col3.metric("🟢 A Tiempo (>= 3 días)", a_tiempo)
+            col1.metric("🔴 Vencidos o Vencen Hoy", int(vencidos))
+            col2.metric("🟡 Próximos a Vencer (1-2 días)", int(riesgo))
+            col3.metric("🟢 A Tiempo (>= 3 días)", int(a_tiempo))
             
             st.markdown("### 📋 Panel de Control de Ingresos")
             styled_df = df_final.style.apply(apply_row_colors, axis=1)
