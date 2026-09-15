@@ -107,16 +107,16 @@ if uploaded_file is not None:
                 if col in df_filtrado.columns:
                     df_filtrado[col] = df_filtrado[col].apply(limpiar_numeros)
 
-            # 7. Limpieza y formateo de fechas
+            # 7. Limpieza y formateo de fechas (CON dayfirst=True PARA FORMATO COLOMBIANO DD/MM/YYYY)
             for col in ['Fecha Registro', 'Fecha de Báscula']:
                 if col in df_filtrado.columns:
-                    df_filtrado[col] = pd.to_datetime(df_filtrado[col], errors='coerce').dt.date
+                    df_filtrado[col] = pd.to_datetime(df_filtrado[col], dayfirst=True, errors='coerce').dt.date
 
             # Eliminar duplicados idénticos
             columnas_dedup = [col for col in ['Placa', 'Fecha Registro', 'Compañia usuaria', 'Número Tipo Documento', 'Transito', 'Fecha de Báscula'] if col in df_filtrado.columns]
             df_filtrado = df_filtrado.drop_duplicates(subset=columnas_dedup, keep='first')
 
-            # 8. Cálculos de Vencimiento y Días Restantes basados en Fecha de Báscula y la Fecha Actual de Referencia
+            # 8. Cálculos de Vencimiento y Días Restantes basados en Fecha de Báscula y Fecha Actual
             df_filtrado['Limite'] = 5
             
             def calcular_vencimiento(row):
@@ -131,7 +131,6 @@ if uploaded_file is not None:
                     
             df_filtrado['Vencimiento 5 DIAS HABILES'] = df_filtrado.apply(calcular_vencimiento, axis=1)
             
-            # Usar la fecha seleccionada en la barra lateral como referencia (equivalente a -$F$2)
             def calcular_dias_restantes(fecha_venc):
                 if pd.isna(fecha_venc) or str(fecha_venc) == 'NaT':
                     return None
@@ -145,16 +144,13 @@ if uploaded_file is not None:
             orden_columnas = [col for col in orden_columnas if col in df_filtrado.columns]
             df_final = df_filtrado[orden_columnas].copy()
             
-            # Convertir Días restantes explícitamente a numérico
-            df_final['Días restantes'] = pd.to_numeric(df_final['Días restantes'], errors='coerce')
+            # Convertir Días restantes a numérico entero para eliminar decimales molestos
+            df_final['Días restantes'] = pd.to_numeric(df_final['Días restantes'], errors='coerce').fillna(0).astype(int)
 
             # --- 9. Lógica de Semaforización ---
             def apply_row_colors(row):
                 try:
-                    dias_val = row['Días restantes']
-                    if pd.isna(dias_val):
-                        return [''] * len(row)
-                    dias = float(dias_val)
+                    dias = int(row['Días restantes'])
                     if dias <= 0:
                         return ['background-color: #d32f2f; color: white;'] * len(row) # Rojo (Vencidos / Hoy)
                     elif 1 <= dias <= 2:
@@ -179,7 +175,8 @@ if uploaded_file is not None:
             
             st.markdown("### 📋 Panel de Control de Ingresos")
             
-            styled_df = df_final.style.apply(apply_row_colors, axis=1)
+            # Formato de visualización limpio sin decimales
+            styled_df = df_final.style.apply(apply_row_colors, axis=1).format({'Días restantes': '{:d}'})
             st.dataframe(styled_df, use_container_width=True, height=500, hide_index=True)
             
             # 10. Descarga
