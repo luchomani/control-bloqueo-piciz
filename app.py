@@ -6,11 +6,11 @@ import numpy as np
 # Configuración de la página
 st.set_page_config(page_title="Control de Bloqueo | Zona Franca", page_icon="🚦", layout="wide")
 
-# Estilos CSS personalizados para simular el tema corporativo
+# Estilos CSS personalizados
 st.markdown("""
     <style>
     .main-header {
-        color: #1f4e3d; /* Verde corporativo oscuro */
+        color: #1f4e3d;
         font-weight: bold;
     }
     .sub-header {
@@ -23,7 +23,15 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.markdown("<h1 class='main-header'>🚦 Módulo de Control de Bloqueos (Reporte PW)</h1>", unsafe_allow_html=True)
-st.markdown("<p class='sub-header'>Carga el archivo Excel <b>ReportePW</b> descargado de PICIZ para automatizar el filtrado y visualizar las alertas de vencimiento.</p>", unsafe_allow_html=True)
+st.markdown("<p class='sub-header'>Carga el archivo Excel <b>ReportePW</b> de PICIZ y define la fecha de corte para sincronizar el cálculo con tu plantilla de SharePoint.</p>", unsafe_allow_html=True)
+
+# --- PANEL LATERAL: Configuración de la Fecha de Corte (Equivalente a la celda de Fecha Actual en Excel) ---
+st.sidebar.header("⚙️ Configuración de Operación")
+fecha_actual_input = st.sidebar.date_input(
+    "📅 Fecha Actual de Referencia",
+    value=datetime.date.today(),
+    help="Esta fecha equivale a la celda de 'Hora y Fecha Actual' en tu Excel de SharePoint y se usa para calcular los días restantes."
+)
 
 # --- Función auxiliar para eliminar ceros decimales (.000000) ---
 def limpiar_numeros(valor):
@@ -42,12 +50,12 @@ def limpiar_numeros(valor):
 uploaded_file = st.file_uploader("Sube el archivo Excel (ReportePW.xlsx)", type=["xlsx", "xls"])
 
 if uploaded_file is not None:
-    with st.spinner("Procesando y limpiando datos..."):
+    with st.spinner("Procesando y sincronizando datos..."):
         try:
             # 1. Cargar el archivo sin encabezados para encontrar la fila correcta
             df_raw = pd.read_excel(uploaded_file, header=None, dtype=str)
             
-            # 2. Buscar la fila que contiene las cabeceras reales (ej. "NOMBRE COMPANIA")
+            # 2. Buscar la fila que contiene las cabeceras reales
             header_row_index = -1
             for i, row in df_raw.iterrows():
                 row_str = " ".join(str(val) for val in row.values)
@@ -108,7 +116,7 @@ if uploaded_file is not None:
             columnas_dedup = [col for col in ['Placa', 'Fecha Registro', 'Compañia usuaria', 'Número Tipo Documento', 'Transito', 'Fecha de Báscula'] if col in df_filtrado.columns]
             df_filtrado = df_filtrado.drop_duplicates(subset=columnas_dedup, keep='first')
 
-            # 8. Cálculos de Vencimiento y Días Restantes basados en Fecha de Báscula
+            # 8. Cálculos de Vencimiento y Días Restantes basados en Fecha de Báscula y la Fecha Actual de Referencia
             df_filtrado['Limite'] = 5
             
             def calcular_vencimiento(row):
@@ -123,12 +131,11 @@ if uploaded_file is not None:
                     
             df_filtrado['Vencimiento 5 DIAS HABILES'] = df_filtrado.apply(calcular_vencimiento, axis=1)
             
-            hoy = datetime.date.today() 
-            
+            # Usar la fecha seleccionada en la barra lateral como referencia (equivalente a -$F$2)
             def calcular_dias_restantes(fecha_venc):
                 if pd.isna(fecha_venc) or str(fecha_venc) == 'NaT':
                     return None
-                delta = fecha_venc - hoy
+                delta = fecha_venc - fecha_actual_input
                 return delta.days
                 
             df_filtrado['Días restantes'] = df_filtrado['Vencimiento 5 DIAS HABILES'].apply(calcular_dias_restantes)
@@ -138,7 +145,7 @@ if uploaded_file is not None:
             orden_columnas = [col for col in orden_columnas if col in df_filtrado.columns]
             df_final = df_filtrado[orden_columnas].copy()
             
-            # Convertir Días restantes explícitamente a numérico para evitar errores de tipo
+            # Convertir Días restantes explícitamente a numérico
             df_final['Días restantes'] = pd.to_numeric(df_final['Días restantes'], errors='coerce')
 
             # --- 9. Lógica de Semaforización ---
@@ -158,13 +165,13 @@ if uploaded_file is not None:
                     pass
                 return [''] * len(row)
 
-            # KPIs precisos con datos numéricos limpios
+            # KPIs precisos
             dias_series = df_final['Días restantes']
             vencidos = (dias_series <= 0).sum()
             riesgo = ((dias_series >= 1) & (dias_series <= 2)).sum()
             a_tiempo = (dias_series >= 3).sum()
             
-            st.markdown("### 📊 Resumen de Operaciones")
+            st.markdown(f"### 📊 Resumen de Operaciones (Fecha de Referencia: {fecha_actual_input.strftime('%d/%m/%Y')})")
             col1, col2, col3 = st.columns(3)
             col1.metric("🔴 Vencidos o Vencen Hoy", int(vencidos))
             col2.metric("🟡 Próximos a Vencer (1-2 días)", int(riesgo))
@@ -172,7 +179,6 @@ if uploaded_file is not None:
             
             st.markdown("### 📋 Panel de Control de Ingresos")
             
-            # Aplicar estilo antes de rellenar vacíos con texto para preservar tipos numéricos
             styled_df = df_final.style.apply(apply_row_colors, axis=1)
             st.dataframe(styled_df, use_container_width=True, height=500, hide_index=True)
             
@@ -191,7 +197,7 @@ if uploaded_file is not None:
             st.download_button(
                 label="📥 Descargar Reporte Formateado (Excel)",
                 data=excel_data,
-                file_name=f"Control_Bloqueos_{datetime.date.today()}.xlsx",
+                file_name=f"Control_Bloqueos_{fecha_actual_input}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
             
@@ -199,4 +205,4 @@ if uploaded_file is not None:
             st.error(f"❌ Ocurrió un error al procesar el archivo: {e}")
 
 else:
-    st.info("Esperando archivo... Por favor, carga el `ReportePW.xlsx` para comenzar.")
+    st.info("Esperando archivo... Por favor, carga el `ReportePW.xlsx` y verifica la fecha de referencia en la barra lateral.")
