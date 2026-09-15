@@ -110,20 +110,22 @@ if uploaded_file is not None:
             columnas_dedup = [col for col in ['Placa', 'Fecha Registro', 'Compañia usuaria', 'Número Tipo Documento', 'Transito', 'Fecha de Báscula'] if col in df_filtrado.columns]
             df_filtrado = df_filtrado.drop_duplicates(subset=columnas_dedup, keep='first')
 
-            # 8. Cálculos de Vencimiento y Días Restantes
+            # 8. Cálculos de Vencimiento y Días Restantes basados en Fecha de Báscula (IGUAL QUE EN EXCEL)
             df_filtrado['Limite'] = 5
             
-            def calcular_vencimiento(fecha_registro):
-                if pd.isna(fecha_registro) or str(fecha_registro) == 'NaT':
+            def calcular_vencimiento(row):
+                # Usar Fecha de Báscula como base principal (igual que en tu Excel de SharePoint), respaldada por Fecha Registro
+                fecha_base = row['Fecha de Báscula'] if pd.notna(row['Fecha de Báscula']) and str(row['Fecha de Báscula']) != 'NaT' else row['Fecha Registro']
+                if pd.isna(fecha_base) or str(fecha_base) == 'NaT':
                     return None
                 try:
                     # Sumar 5 días hábiles
-                    fecha_venc = np.busday_offset(np.datetime64(fecha_registro), 5, roll='forward')
+                    fecha_venc = np.busday_offset(np.datetime64(fecha_base), 5, roll='forward')
                     return pd.to_datetime(fecha_venc).date()
                 except:
                     return None
                     
-            df_filtrado['Vencimiento 5 DIAS HABILES'] = df_filtrado['Fecha Registro'].apply(calcular_vencimiento)
+            df_filtrado['Vencimiento 5 DIAS HABILES'] = df_filtrado.apply(calcular_vencimiento, axis=1)
             
             # Usar fecha actual para el cálculo
             hoy = datetime.date.today() 
