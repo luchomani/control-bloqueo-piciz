@@ -19,13 +19,14 @@ st.markdown("<p class='sub-header'>Carga el archivo Excel <b>ReportePW</b> desca
 
 # --- Funciones Auxiliares ---
 def limpiar_numeros(valor):
-    """Elimina decimales y ceros sobrantes (.000000) de los IDs"""
+    """Elimina decimales y ceros sobrantes (.000000) de los IDs y fuerza a string limpio"""
     if pd.isna(valor) or valor == '':
         return ""
     try:
+        # Si es un número con decimales o flotante de Excel
         return str(int(float(valor)))
     except ValueError:
-        return str(valor)
+        return str(valor).strip()
 
 # --- Carga de Archivo ---
 uploaded_file = st.file_uploader("Sube el archivo Excel (ReportePW.xlsx)", type=["xlsx", "xls"])
@@ -33,23 +34,24 @@ uploaded_file = st.file_uploader("Sube el archivo Excel (ReportePW.xlsx)", type=
 if uploaded_file is not None:
     with st.spinner("Procesando, unificando placas y calculando fechas..."):
         try:
-            # 1. Buscar la fila correcta de encabezados
-            df_raw = pd.read_excel(uploaded_file, header=None)
+            # 1. Buscar la fila correcta de encabezados leyendo todo como string para evitar errores de tipo
+            df_raw = pd.read_excel(uploaded_file, header=None, dtype=str)
             header_row_index = -1
             for i, row in df_raw.iterrows():
-                if "NOMBRE COMPANIA" in str(row.values):
+                row_str = " ".join(str(val) for val in row.values)
+                if "NOMBRE COMPANIA" in row_str or "PLACA" in row_str:
                     header_row_index = i
                     break
             
             if header_row_index == -1:
-                st.error("❌ No se encontró la fila de encabezados. Verifica el formato del Excel.")
+                st.error("❌ No se encontró la fila de encabezados en el Excel. Asegúrate de que contenga las columnas requeridas.")
                 st.stop()
             
-            # 2. Leer el Excel desde los encabezados
-            df = pd.read_excel(uploaded_file, header=header_row_index)
+            # 2. Leer el Excel desde los encabezados detectados forzando tipo texto
+            df = pd.read_excel(uploaded_file, header=header_row_index, dtype=str)
             df.columns = df.columns.str.strip().str.replace(r'\r\n', '', regex=True)
             
-            # 3. Filtrar columnas solicitadas
+            # 3. Mapear y filtrar columnas solicitadas
             columnas_esperadas = {
                 'NOMBRE COMPANIA': 'Compañia usuaria',
                 'PLACA': 'Placa',
@@ -58,32 +60,38 @@ if uploaded_file is not None:
                 'TRANSITO': 'Transito',
                 'FECHA BASCULA': 'Fecha de Báscula'
             }
+            
             columnas_existentes = {k: v for k, v in columnas_esperadas.items() if k in df.columns}
+            if not columnas_existentes:
+                st.error("❌ El archivo no contiene las columnas esperadas (NOMBRE COMPANIA, PLACA, etc.).")
+                st.stop()
+                
             df_filtrado = df[list(columnas_existentes.keys())].rename(columns=columnas_existentes)
             
             # Limpiar filas vacías sin placas
             if 'Placa' in df_filtrado.columns:
                 df_filtrado = df_filtrado.dropna(subset=['Placa'])
+                df_filtrado['Placa'] = df_filtrado['Placa'].astype(str).str.strip()
 
             # 4. Limpieza de números (Documentos y Tránsito)
             for col in ['Número Tipo Documento', 'Transito']:
                 if col in df_filtrado.columns:
                     df_filtrado[col] = df_filtrado[col].apply(limpiar_numeros)
 
-            # 5. Formateo de fechas a Date
+            # 5. Formateo seguro de fechas
             for col in ['Fecha Registro', 'Fecha de Báscula']:
                 if col in df_filtrado.columns:
-                    df_filtrado[col] = pd.to_datetime(df_filtrado[col], format='%d/%m/%Y', errors='coerce').dt.date
+                    df_filtrado[col] = pd.to_datetime(df_filtrado[col], errors='coerce').dt.date
 
-            # Límite constante
+            # Límite constante (5 días hábiles)
             df_filtrado['Limite'] = 5
 
-            # 6. Agrupar duplicados (Unir Placas)
-            # Agrupa por todas las columnas base para fusionar las placas de un mismo tránsito
+            # 6. Agrupar duplicados de forma segura (Unir Placas si todo lo demás es igual)
             columnas_base = [col for col in ['Fecha Registro', 'Compañia usuaria', 'Número Tipo Documento', 'Transito', 'Fecha de Báscula', 'Limite'] if col in df_filtrado.columns]
             
+            # Garantizamos que la unión de placas sea estrictamente de strings para evitar errores de tipo
             df_filtrado = df_filtrado.groupby(columnas_base, dropna=False, as_index=False).agg({
-                'Placa': lambda x: ' / '.join(x.dropna().unique())
+                'Placa': lambda x: ' / '.join(str(v).strip() for v in x.dropna().unique() if str(v).strip() != '')
             })
 
             # 7. Cálculo de Fechas Equivalente a DIA.LAB de Excel
@@ -91,7 +99,6 @@ if uploaded_file is not None:
                 if pd.isna(fecha_registro):
                     return None
                 try:
-                    # np.busday_offset suma los 5 días ignorando sábados y domingos
                     fecha_venc = np.busday_offset(np.datetime64(fecha_registro), 5, roll='forward')
                     return pd.to_datetime(fecha_venc).date()
                 except:
@@ -99,7 +106,7 @@ if uploaded_file is not None:
                     
             df_filtrado['Vencimiento 5 DIAS HABILES'] = df_filtrado['Fecha Registro'].apply(calcular_vencimiento)
             
-            # Cálculo de días restantes contra la fecha actual
+            # Cálculo de días restantes contra la fecha actual real
             hoy = datetime.date.today()
             
             def calcular_dias_restantes(fecha_venc):
@@ -119,11 +126,11 @@ if uploaded_file is not None:
                 try:
                     dias = float(row['Días restantes'])
                     if dias <= 0:
-                        return ['background-color: #d32f2f; color: white;'] * len(row) # Rojo
+                        return ['background-color: #d32f2f; color: white;'] * len(row) # Rojo (Vencidos / Vencen hoy)
                     elif 1 <= dias <= 2:
-                        return ['background-color: #fbc02d; color: black;'] * len(row)  # Amarillo
-                    elif dias >= 3:
-                        return ['background-color: #388e3c; color: white;'] * len(row)  # Verde
+                        return ['background-color: #fbc02d; color: black;'] * len(row)  # Amarillo (Próximos a vencer)
+                    else:
+                        return ['background-color: #388e3c; color: white;'] * len(row)  # Verde (A tiempo)
                 except:
                     pass
                 return [''] * len(row)
