@@ -1,5 +1,5 @@
-# --- DENTRO DE: if uploaded_file is not None: ---
-
+if uploaded_file is not None:
+    try:
         with st.spinner("Procesando registros aduaneros..."):
             # 1. Cargar archivo crudo
             df_raw = pd.read_excel(uploaded_file, header=None, dtype=str)
@@ -24,7 +24,7 @@
                 .str.replace(r'\s+', ' ', regex=True)
             )
 
-            # 3. Mapeo de columnas (AHORA INCLUYE COMENTARIO Y TIPO INGRESO)
+            # 3. Mapeo de columnas (INCLUYE COMENTARIO Y TIPO INGRESO)
             columnas_esperadas = {
                 'NOMBRE COMPANIA': 'Compañía Usuaria',
                 'PLACA': 'Placa',
@@ -64,7 +64,7 @@
                         df_filtrado[col], dayfirst=True, errors='coerce'
                     ).dt.date
 
-            # 6. Deduplicación (incluye Tipo Ingreso para no perder OTROS INGRESOS)
+            # 6. Deduplicación
             columnas_dedup = [
                 col for col in [
                     'Placa', 'Fecha Registro', 'Compañía Usuaria',
@@ -100,7 +100,7 @@
 
             df_filtrado['Días Restantes'] = df_filtrado['Vencimiento (5 Días Hábiles)'].apply(calcular_dias_restantes)
 
-            # 8. Orden final de columnas (AHORA INCLUYE Tipo Ingreso y Comentario)
+            # 8. Orden final de columnas
             orden_columnas = [
                 'Placa', 'Fecha Registro', 'Compañía Usuaria',
                 'Tipo Ingreso', 'Número Documento', 'Documento Transporte',
@@ -118,3 +118,6 @@
 
             st.session_state.df_final = df_final
             st.session_state.file_processed = True
+
+    except Exception as e:
+        st.error(f"Error en el procesamiento del archivo: {e}")
